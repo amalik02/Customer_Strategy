@@ -1,0 +1,260 @@
+---
+title: "Targeting Based on Heterogeneous Treatment Effects - Step 1"
+author: "Aziz Abdul Malik"
+date: "March 2, 2018"
+output:
+  word_document: default
+  pdf_document: default
+graphics: yes
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, message = FALSE, eval = TRUE,
+                      fig.width = 6, fig.height = 4.5, fig.align = "right", cache = TRUE)
+
+
+```
+
+
+
+```{r, eval=TRUE}
+library(devtools)
+install_github("walterwzhang/causalTree")
+```
+
+\bigskip
+
+
+## Overview
+
+Both the randomized treatment assignment and the rich customer-level data are crucial to achieve our goals:
+
+1. Predict **incremental dollar spending** that can be *attributed* to the catalog mailing. Formally, 
+$$\tau_{i}=\mathbb{E}[Y_{i}(1)-Y_{i}(0)|\boldsymbol{x}_{i}],$$
+the conditional average treatment effect of a catalog mailing. This heterogeneous treatment effect, $\tau_i$, is the expected change in spending due to the catalog mailing. In particular, I predict incremental dollar spending at the **customer-level**, based on all the features (variables) that capture past customer behavior.
+
+2. Predict customer-level incremental profits due to targeting a customer (catalog mailing), and develop a targeting strategy.
+
+3. Evaluate the predictive power and profitability of the targeting strategy. Compare different targeting strategies, based on different estimation methods.
+
+4. Evaluate the predictive power and profitability of the targeting strategy that was developed using the 2015 data in an implementation of the strategy in 2016. This evaluation allows to assess the strict external validity or transportability of the results. 
+
+\medskip
+
+
+\newpage
+
+
+
+## Step 1: Estimation and prediction of conditional average treatment effects
+
+Using the 2015 data to estimate and validate several models to predict the heterogeneous treatment effects.
+
+```{r}
+library(bit64)
+library(data.table)
+library(glmnet)
+library(causalTree)
+library(ggplot2)
+library(knitr)
+```
+
+```{r}
+load("Customer-Development-2015.RData")
+```
+
+Split the sample into training and validation.
+
+```{r, results = "hide"}
+set.seed(2001)
+crm_DT[, training_sample := rbinom(nrow(crm_DT), 1, 0.5)]
+
+```
+
+
+```{r}
+setnames(crm_DT, "mailing_indicator", "W")
+```
+
+
+#### Data pre-processing
+
+Remove highly correlated features from the data set
+
+
+```{r}
+
+cor_matrix = cor(crm_DT[, !c("customer_id", "W", "outcome_spend"),
+with = FALSE])
+
+cor_matrix[upper.tri(cor_matrix, diag = TRUE)] = NA
+
+cor_DT = data.table(row = rep(rownames(cor_matrix), ncol(cor_matrix)),
+                    col = rep(colnames(cor_matrix), each = ncol(cor_matrix)),
+                    cor = as.vector(cor_matrix))
+cor_DT = cor_DT[is.na(cor) == FALSE]
+
+large_cor_DT = cor_DT[abs(cor) > 0.95]
+kable(large_cor_DT, digits = 4)
+
+crm_DT = crm_DT[, !large_cor_DT$row, with = FALSE]
+
+```
+
+
+
+#### Estimation of heterogeneous treatment effects
+
+Using the training sample to estimate the conditional average treatment effect (CATE) on dollar spending, $\tau_i$, due to catalog targeting. 
+
+Estimating **linear models with treatment-interactions**:
+
+(a) OLS
+
+
+(b) LASSO
+
+
+Using a recently developed non-parametric estimator that directly predicts the CATE for each customer:
+
+(c) Causal forest
+
+\bigskip
+
+
+
+#### Estimation
+
+To simplify code I **created separate training and validation samples** from the full data set. 
+
+
+```{r}
+training_DT   = crm_DT[training_sample == 1,
+                       !c("customer_id", "training_sample"), with = FALSE]
+validation_DT = crm_DT[training_sample == 0,
+                       !c("customer_id", "training_sample"), with = FALSE]
+```
+
+\bigskip
+
+
+
+**a) OLS**
+
+
+```{r, cache=TRUE}
+
+fit_OLS = lm(outcome_spend ~ .*W , data = training_DT)
+Summary_OLS<-summary(fit_OLS)
+
+```
+
+```{r, cache=TRUE}
+
+DT_OLS_Predict_W_1_DT = copy(validation_DT)
+DT_OLS_Predict_W_1_DT[, W:=1]
+
+DT_OLS_Predict_W_0_DT <- copy(validation_DT)
+DT_OLS_Predict_W_0_DT[, W:=0]
+
+DT_OLS_Predict_W_1_DT[, pred_spend_W_1 := predict(fit_OLS, newdata = DT_OLS_Predict_W_1_DT)]
+DT_OLS_Predict_W_0_DT[, pred_spend_W_0 := predict(fit_OLS, newdata = DT_OLS_Predict_W_0_DT)]
+
+```
+
+
+
+**b) LASSO**
+
+```{r, cache=TRUE}
+
+#LASSO - Train
+X = model.matrix(outcome_spend ~ 0 + .*W, data = training_DT)
+y = training_DT[, outcome_spend]
+
+fit_LASSO = cv.glmnet(x = X, y = y, alpha = 1.0)
+
+```
+
+
+
+```{r, cache=TRUE}
+
+#LASSO Predict
+DT_LASSO_Predict_W_1_DT = copy(validation_DT)
+DT_LASSO_Predict_W_1_DT[, W:=1]
+
+DT_LASSO_Predict_W_0_DT <- copy(validation_DT)
+DT_LASSO_Predict_W_0_DT[, W:=0]
+
+X_new_LASSO_W1 = model.matrix(outcome_spend ~ 0 + .*W, data = DT_LASSO_Predict_W_1_DT)
+X_new_LASSO_W0 = model.matrix(outcome_spend ~ 0 + .*W, data = DT_LASSO_Predict_W_0_DT)
+
+DT_LASSO_Predict_W_1_DT[, pred_spend_W_1 := predict(fit_LASSO, newx = X_new_LASSO_W1, s = "lambda.min")]
+DT_LASSO_Predict_W_0_DT[, pred_spend_W_0 := predict(fit_LASSO, newx = X_new_LASSO_W0, s = "lambda.min")]
+
+
+```
+
+
+**c) Causal Forest **
+
+```{r, cache=TRUE}
+
+set.seed(1964)
+fit_Causal_Forest = causalForest(outcome_spend ~ .,
+                   treatment = training_DT$W,
+                   data = training_DT,
+                   num.trees = 1000,
+                   verbose = TRUE)
+
+```
+
+
+```{r, cache=TRUE}
+
+#Causal Forest Predict
+DT_Causal_Forest_Predict<-predict(fit_Causal_Forest, validation_DT)
+
+```
+
+
+#### Predict treatment effects
+
+
+
+```{r, cache=TRUE}
+predict_DT = validation_DT[, .(W, outcome_spend)]
+
+#Conditional Average Treatment Effect --- OLS
+predict_DT[, pred_T_E_OLS:= DT_OLS_Predict_W_1_DT$pred_spend_W_1 - DT_OLS_Predict_W_0_DT$pred_spend_W_0]
+rm(DT_OLS_Predict_W_1_DT)
+rm(DT_OLS_Predict_W_0_DT)
+
+#Conditional Average Treatment Effect --- LASSO
+predict_DT[, pred_T_E_LASSO:= DT_LASSO_Predict_W_1_DT$pred_spend_W_1 - DT_LASSO_Predict_W_0_DT$pred_spend_W_0]
+rm(DT_LASSO_Predict_W_1_DT)
+rm(DT_LASSO_Predict_W_0_DT)
+
+predict_DT[, pred_T_E_Causal := DT_Causal_Forest_Predict]
+
+head(predict_DT)
+
+```
+
+
+
+**Once all model predictions are added, saving predictions data to RData and model estimates in RDS files.**
+
+
+```{r, cache=TRUE}
+
+save(predict_DT, file = "predictions.RData")
+saveRDS(fit_OLS, file = "fit_OLS")
+saveRDS(fit_LASSO, file = "fit_LASSO")
+saveRDS(fit_Causal_Forest, file = "fit_Causal_Forest")
+
+
+```
+

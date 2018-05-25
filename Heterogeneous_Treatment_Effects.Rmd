@@ -28,7 +28,7 @@ install_github("walterwzhang/causalTree")
 
 ## Overview
 
-Both the randomized treatment assignment and the rich customer-level data are crucial to achieve our goals:
+Both the randomized treatment and the rich customer-level data are crucial to achieve the goals:
 
 1. Predict **incremental dollar spending** that can be *attributed* to the catalog mailing. Formally, 
 $$\tau_{i}=\mathbb{E}[Y_{i}(1)-Y_{i}(0)|\boldsymbol{x}_{i}],$$
